@@ -474,53 +474,125 @@ func CallFunction(name string, params ...interface{}) (result []reflect.Value, e
 	return
 }
 
-// CallMethod calls a method by name on a given instance with params.
-// Example:
-//   result, err := CallMethod(myObj, "DoSomething", 42, "abc")
-func CallMethod(instance interface{}, methodName string, params ...interface{}) ([]reflect.Value, error) {
-	if instance == nil {
-		return nil, errors.New("CallMethod: instance is nil")
+// CallMethod uses reflection to call the named method on i with params.
+// It preserves the original signature and behavior:
+//   func CallMethod(i interface{}, methodName string, params []interface{}) (interface{}, interface{})
+// Returns: (result, error). If the method returns only an error, result is nil.
+// If the method returns (T, error), both are forwarded. Panics are caught and returned as the error.
+func CallMethod(i interface{}, methodName string, params []interface{}) (interface{}, interface{}) {
+	if i == nil {
+		return "", errors.New("Nil pointer!")
 	}
 
-	v := reflect.ValueOf(instance)
-	m := v.MethodByName(methodName)
-	if !m.IsValid() {
-		return nil, errors.New("CallMethod: method " + methodName + " not found")
+	var ptr reflect.Value
+	val := reflect.ValueOf(i)
+
+	// In case of a nil pointer...
+	if val.Kind() == reflect.Ptr && val.IsNil() {
+		return "", errors.New("Nil pointer!")
 	}
 
-	mt := m.Type()
-	// Check arity for non-variadic methods
-	if !mt.IsVariadic() && len(params) != mt.NumIn() {
-		return nil, errors.New("CallMethod: wrong number of parameters for " +
-			methodName + " got " + strconv.Itoa(len(params)) +
-			" but expect " + strconv.Itoa(mt.NumIn()))
+	// Normalize pointer/value pair
+	if val.Kind() == reflect.Ptr {
+		ptr = val
+		val = ptr.Elem()
+	} else {
+		ptr = reflect.New(val.Type())
+		ptr.Elem().Set(val)
 	}
 
+	// Find method on value or pointer receiver
+	finalMethod := val.MethodByName(methodName)
+	if !finalMethod.IsValid() {
+		finalMethod = ptr.MethodByName(methodName)
+	}
+
+	if !finalMethod.IsValid() {
+		return nil, errors.New("Method dosen't exist!")
+	}
+
+	mt := finalMethod.Type()
+
+	// Arity check for non-variadic methods (NumIn already excludes receiver on method values)
+	if !mt.IsVariadic() && mt.NumIn() != len(params) {
+		errMsg := "Wrong number of parameter for method " + methodName +
+			" expected " + strconv.Itoa(mt.NumIn()) +
+			" got " + strconv.Itoa(len(params))
+		return nil, errors.New(errMsg)
+	}
+
+	// Build argument list with best-effort conversions & nil handling
 	in := make([]reflect.Value, len(params))
-	for i, p := range params {
-		if p == nil {
-			if !mt.IsVariadic() || i < mt.NumIn()-1 {
-				in[i] = reflect.Zero(mt.In(i))
-			} else {
-				var nilVal interface{}
-				in[i] = reflect.ValueOf(&nilVal).Elem()
-			}
-			continue
-		}
-		vp := reflect.ValueOf(p)
+	for k, p := range params {
+		// Determine target parameter type (variadic element type if applicable)
 		var target reflect.Type
-		if !mt.IsVariadic() || i < mt.NumIn()-1 {
-			target = mt.In(i)
+		if !mt.IsVariadic() || k < mt.NumIn()-1 {
+			target = mt.In(k)
 		} else {
 			target = mt.In(mt.NumIn() - 1).Elem()
 		}
+
+		if p == nil {
+			// nil → zero value of the expected type
+			in[k] = reflect.Zero(target)
+			continue
+		}
+
+		vp := reflect.ValueOf(p)
 		if vp.Type() != target && vp.CanConvert(target) {
 			vp = vp.Convert(target)
 		}
-		in[i] = vp
+		in[k] = vp
 	}
 
-	return m.Call(in), nil
+	// Call in a goroutine and recover from panics, returning them as the error value
+	wait := make(chan []interface{})
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				wait <- []interface{}{nil, r}
+			}
+		}()
+
+		results := finalMethod.Call(in)
+
+		switch len(results) {
+		case 0:
+			// No returns
+			wait <- []interface{}{"", nil}
+		case 1:
+			// Single return; if it's an error, map accordingly
+			r0 := results[0]
+			if !r0.IsZero() {
+				if err, ok := r0.Interface().(error); ok && err != nil {
+					wait <- []interface{}{nil, err}
+					return
+				}
+				wait <- []interface{}{r0.Interface(), nil}
+				return
+			}
+			wait <- []interface{}{nil, nil}
+		default:
+			// Two or more returns: use first as result, second as error if it's an error
+			r0 := results[0]
+			var res interface{}
+			if r0.IsValid() && !r0.IsZero() {
+				res = r0.Interface()
+			}
+
+			var err interface{}
+			r1 := results[1]
+			if r1.IsValid() && !r1.IsZero() {
+				if e, ok := r1.Interface().(error); ok && e != nil {
+					err = e
+				}
+			}
+			wait <- []interface{}{res, err}
+		}
+	}()
+
+	out := <-wait
+	return out[0], out[1]
 }
 
 // --------------------
