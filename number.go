@@ -19,7 +19,7 @@ func ToString(value interface{}) string {
 	case reflect.String:
 		str = value.(string)
 	case reflect.Int:
-		str = strconv.Itoa(toInt(value))
+		str = strconv.Itoa(ToInt(value))
 	case reflect.Int8:
 		str = strconv.Itoa(int(value.(int8)))
 	case reflect.Int16:

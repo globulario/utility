@@ -3,6 +3,7 @@ package Utility
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -224,7 +225,7 @@ func GetIpv4(address string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	exist, ip, _ := hosts.HostAddressLookup(address)
+	exist, ip, _ := hosts.HostAddressLookup(address, txeh.IPFamilyV4)
 	if exist {
 		return ip, nil
 	}
@@ -246,7 +247,7 @@ func IsLocal(hostname string) bool {
 	if err != nil {
 		return false
 	}
-	exist, ip, _ := hosts.HostAddressLookup(hostname)
+	exist, ip, _ := hosts.HostAddressLookup(hostname, txeh.IPFamilyV4)
 	if exist {
 		return privateIPCheck(ip)
 	}

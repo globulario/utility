@@ -2,10 +2,14 @@
 package Utility
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"os/exec"
 	"runtime"
 	"strings"
 	"syscall"
@@ -116,3 +120,99 @@ func TerminateProcess(pid int, exitcode int) error {
 	return p.Signal(os.Interrupt)
 }
 
+
+// ReadOutput reads line-oriented output from rc and sends it to the output channel.
+// It trims trailing CR for CRLF streams and closes both rc and output when finished.
+func ReadOutput(output chan string, rc io.ReadCloser) {
+	defer func() {
+		_ = rc.Close()
+		close(output)
+	}()
+
+	sc := bufio.NewScanner(rc)
+	// Increase buffer in case of long lines
+	buf := make([]byte, 0, 64*1024)
+	sc.Buffer(buf, 1024*1024) // up to 1MB lines
+
+	for sc.Scan() {
+		line := strings.TrimRight(sc.Text(), "\r")
+		// preserve behavior: skip pure empty lines after trim
+		if strings.TrimSpace(line) != "" {
+			output <- line
+		}
+	}
+	if err := sc.Err(); err != nil && !errors.Is(err, io.EOF) {
+		log.Println("ReadOutput:", err)
+	}
+}
+
+// RunCmd executes a command in dir with args and streams stdout lines to the console.
+// It sends the final error (nil on success) on wait and returns.
+// Stdout is streamed; stderr is captured and included in the error on failure.
+func RunCmd(name, dir string, args []string, wait chan error) {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		wait <- err
+		return
+	}
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	fmt.Println("run command:", name, args)
+
+	// Start the command before launching readers; if Start fails, we won't block on pipes.
+	if err := cmd.Start(); err != nil {
+		wait <- fmt.Errorf("%s </br> %w: %s", buildCmdLine(name, args), err, stderr.String())
+		return
+	}
+
+	// Channel to receive stdout lines and a signal when printing is done
+	outCh := make(chan string, 256)
+	donePrint := make(chan struct{})
+
+	// Printer goroutine: echo every stdout line with command and pid
+	go func() {
+		for line := range outCh {
+			pid := -1
+			if cmd.Process != nil {
+				pid = cmd.Process.Pid
+			}
+			fmt.Println(name+":", pid, line)
+		}
+		close(donePrint)
+	}()
+
+	// Reader goroutine: reads stdout and closes outCh when finished
+	go ReadOutput(outCh, stdout)
+
+	// Wait for the command to exit
+	err = cmd.Wait()
+
+	// Ensure we finish printing any remaining lines
+	<-donePrint
+
+	if err != nil {
+		wait <- fmt.Errorf("%s </br> %v: %s", buildCmdLine(name, args), err, strings.TrimSpace(stderr.String()))
+		return
+	}
+
+	wait <- nil
+}
+
+// buildCmdLine formats `name` and `args` into a shell-like string.
+func buildCmdLine(name string, args []string) string {
+	if len(args) == 0 {
+		return name
+	}
+	var b strings.Builder
+	b.WriteString(name)
+	for _, a := range args {
+		b.WriteByte(' ')
+		b.WriteString(a)
+	}
+	return b.String()
+}

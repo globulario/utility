@@ -4,12 +4,12 @@ package Utility
 import (
 	"errors"
 	"sort"
-	"strings"
 	"unicode"
 
 	"golang.org/x/text/runes"
 	"golang.org/x/text/transform"
 	"golang.org/x/text/unicode/norm"
+	"github.com/pborman/uuid"
 )
 
 // Contains checks if a slice contains a given string.
@@ -91,3 +91,13 @@ func SortStrings(s []string) []string {
 	return result
 }
 
+
+// Create a random uuid value.
+func RandomUUID() string {
+	return uuid.NewRandom().String()
+}
+
+// Create a MD5 hash value with UUID format.
+func GenerateUUID(val string) string {
+	return uuid.NewMD5(uuid.NameSpace_DNS, []byte(val)).String()
+}
