@@ -2,14 +2,18 @@
 package Utility
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"errors"
+	"reflect"
 	"sort"
 	"unicode"
 
+	"github.com/kalafut/imohash"
+	"github.com/pborman/uuid"
 	"golang.org/x/text/runes"
 	"golang.org/x/text/transform"
 	"golang.org/x/text/unicode/norm"
-	"github.com/pborman/uuid"
 )
 
 // Contains checks if a slice contains a given string.
@@ -100,4 +104,68 @@ func RandomUUID() string {
 // Create a MD5 hash value with UUID format.
 func GenerateUUID(val string) string {
 	return uuid.NewMD5(uuid.NameSpace_DNS, []byte(val)).String()
+}
+
+/**
+ * GetMD5Hash returns the MD5 hash of the input text.
+ */
+func GetMD5Hash(text string) string {
+	hasher := md5.New()
+	hasher.Write([]byte(text))
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+/**
+ * Recursive function that return the checksum value.
+ */
+func GetChecksum(values interface{}) string {
+	var checksum string
+
+	if reflect.TypeOf(values).String() == "map[string]interface {}" {
+		var keys []string
+		for k, _ := range values.(map[string]interface{}) {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if values.(map[string]interface{})[key] != nil {
+				checksum += GetChecksum(values.(map[string]interface{})[key])
+			}
+		}
+
+	} else if reflect.TypeOf(values).String() == "[]interface {}" {
+
+		for i := 0; i < len(values.([]interface{})); i++ {
+			if values.([]interface{})[i] != nil {
+				checksum += GetChecksum(values.([]interface{})[i])
+			}
+		}
+
+	} else if reflect.TypeOf(values).String() == "[]map[string]interface {}" {
+		for i := 0; i < len(values.([]map[string]interface{})); i++ {
+			if values.([]map[string]interface{})[i] != nil {
+				checksum += GetChecksum(values.([]map[string]interface{})[i])
+			}
+		}
+	} else if reflect.TypeOf(values).String() == "[]string" {
+		for i := 0; i < len(values.([]string)); i++ {
+			checksum += GetChecksum(values.([]string)[i])
+		}
+	} else {
+		// here the value must be a single value...
+		checksum += ToString(values)
+	}
+
+	return GetMD5Hash(checksum)
+}
+
+const filechunk = 8192 // we settle for 8KB
+func CreateFileChecksum(path string) string {
+	checksum, _ := imohash.SumFile(path)
+	return GetMD5Hash(string(checksum[:]))
+}
+
+func CreateDataChecksum(data []byte) string {
+	checksum := imohash.Sum(data)
+	return GetMD5Hash(string(checksum[:]))
 }
