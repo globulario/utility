@@ -2,6 +2,7 @@
 package Utility
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,10 +10,12 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Exists reports whether the named file or directory exists.
@@ -265,3 +268,92 @@ func JsonErrorStr(functionName string, fileLine string, err error) string {
 	return string(str)
 }
 
+/**
+ * Read movie file metadata...
+ */
+func ReadMetadata(path string) (map[string]interface{}, error) {
+	cmd := exec.Command(`ffprobe`, `-hide_banner`, `-loglevel`, `fatal`, `-show_format`, `-print_format`, `json`, `-i`, path)
+	cmd.Dir = os.TempDir()
+
+	var out bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+
+	if err != nil {
+		return nil, err
+	}
+
+	infos := make(map[string]interface{})
+	err = json.Unmarshal(out.Bytes(), &infos)
+	if err != nil {
+		return nil, err
+	}
+
+	return infos, nil
+}
+
+/**
+ * Store meta data into a file.
+ */
+func SetMetadata(path, key, value string) error {
+
+	// ffmpeg -i input.mp4 -metadata title="The video titile" -c copy output.mp4
+	path = strings.ReplaceAll(path, "\\", "/")
+	ext := path[strings.LastIndex(path, ".")+1:]
+
+	// ffmpeg -i input.mp4 -metadata title="The video titile" -c copy output.mp4
+	// Try more than once...
+	nbTry := 30
+	var err error
+
+	// Generate the video in a temp file...
+	dest := strings.ReplaceAll(path, "."+ext, ".temp."+ext)
+	if Exists(dest) {
+		os.Remove(dest)
+	}
+
+	for nbTry > 0 {
+		// Generate the video in a temp file...
+		dest := strings.ReplaceAll(path, "."+ext, ".temp."+ext)
+		if Exists(dest) {
+			os.Remove(dest)
+		}
+
+		args := []string{"-i", path, "-c:v", "copy"}
+		args = append(args, "-c:a", "copy", "-c:s", "mov_text", "-map", "0")
+		args = append(args, `-metadata`, key+`=`+value, dest)
+
+		wait := make(chan error)
+		RunCmd("ffmpeg", filepath.Dir(path), args, wait)
+		err = <-wait
+
+		if err != nil || !Exists(dest) {
+			fmt.Println("fail to create metadata with error ", err, " try again in 2 sec...", path, nbTry)
+			nbTry-- // give it time
+			time.Sleep(2 * time.Second)
+		} else if Exists(dest) {
+			// Remove the original file...
+			err = os.Remove(path)
+			if err != nil {
+				return err
+			}
+
+			// rename the file...
+			err = os.Rename(dest, path)
+			if err != nil {
+				return err
+			}
+
+			return nil
+		}
+		if err != nil {
+			fmt.Println("fail to run command ", err)
+			return err
+		}
+
+	}
+
+	return err
+}
