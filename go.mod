@@ -19,6 +19,7 @@ require (
 require github.com/twmb/murmur3 v1.1.5 // indirect
 
 require (
+	github.com/dhowden/tag v0.0.0-20240417053706-3d75831295e8
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/kalafut/imohash v1.1.0
 	github.com/pborman/uuid v1.2.1

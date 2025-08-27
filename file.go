@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"github.com/dhowden/tag"
 )
 
 // Exists reports whether the named file or directory exists.
@@ -356,4 +357,170 @@ func SetMetadata(path, key, value string) error {
 	}
 
 	return err
+}
+
+func fileNameWithoutExtension(fileName string) string {
+	return strings.TrimSuffix(fileName, filepath.Ext(fileName))
+}
+
+func ReadAudioMetadata(path string, thumnailHeight, thumbnailWidth int) (map[string]interface{}, error) {
+
+	path = strings.ReplaceAll(path, "\\", "/")
+	f_, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+
+	defer f_.Close()
+
+	m, err := tag.ReadFrom(f_)
+	var metadata map[string]interface{}
+
+	if err == nil {
+		metadata = make(map[string]interface{})
+		metadata["Album"] = m.Album()
+		metadata["AlbumArtist"] = m.AlbumArtist()
+		metadata["Artist"] = m.Artist()
+		metadata["Comment"] = m.Comment()
+		metadata["Composer"] = m.Composer()
+		metadata["FileType"] = m.FileType()
+		metadata["Format"] = m.Format()
+		metadata["Genre"] = m.Genre()
+		metadata["Lyrics"] = m.Lyrics()
+		metadata["Picture"] = m.Picture()
+		metadata["Raw"] = m.Raw()
+		metadata["Title"] = m.Title()
+		if len(m.Title()) == 0 {
+			metadata["Title"] = fileNameWithoutExtension(filepath.Base(path))
+		}
+		metadata["Year"] = m.Year()
+
+		metadata["DisckNumber"], _ = m.Disc()
+		_, metadata["DiscTotal"] = m.Disc()
+
+		metadata["TrackNumber"], _ = m.Track()
+		_, metadata["TrackTotal"] = m.Track()
+
+		if m.Picture() != nil {
+
+			// Determine the content type of the image file
+			mimeType := m.Picture().MIMEType
+
+			// Prepend the appropriate URI scheme header depending
+			fileName := RandomUUID()
+
+			// on the MIME type
+			switch mimeType {
+			case "image/jpg":
+				fileName += ".jpg"
+			case "image/jpeg":
+				fileName += ".jpg"
+			case "image/png":
+				fileName += ".png"
+			}
+
+			imagePath := os.TempDir() + "/" + fileName
+			defer os.Remove(imagePath)
+
+			os.WriteFile(imagePath, m.Picture().Data, 0664)
+
+			if Exists(imagePath) {
+				metadata["ImageUrl"], _ = CreateThumbnail(imagePath, thumnailHeight, thumbnailWidth)
+			}
+
+		} else {
+
+			imagePath := path[:strings.LastIndex(path, "/")]
+
+			// Try to find the cover image...
+			if Exists(imagePath + "/cover.jpg") {
+				imagePath += "/cover.jpg"
+			} else if Exists(imagePath + "/Cover.jpg") {
+				imagePath += "/Cover.jpg"
+			} else if Exists(imagePath + "/folder.jpg") {
+				imagePath += "/folder.jpg"
+			} else if Exists(imagePath + "/Folder.jpg") {
+				imagePath += "/Folder.jpg"
+			} else if Exists(imagePath + "/AlbumArt.jpg") {
+				imagePath += "/AlbumArt.jpg"
+			} else if Exists(imagePath + "/Front.jpg") {
+				imagePath += "/Front.jpg"
+			} else if Exists(imagePath + "/front.jpg") {
+				imagePath += "/front.jpg"
+			} else if Exists(imagePath + "/thumb.jpg") {
+				imagePath += "/thumb.jpg"
+			} else if Exists(imagePath + "/Thumbnail.jpg") {
+				imagePath += "/Thumbnail.jpg"
+			} else {
+				// take the first found image it that case...
+				images := GetFilePathsByExtension(imagePath, ".jpg")
+				if len(images) > 0 {
+					imagePath = images[0]
+					foundImageLoop:
+					for i := 0; i < len(images); i++ {
+						imagePath_ := images[i]
+						if strings.Contains(strings.ToLower(imagePath_), "front") || strings.Contains(strings.ToLower(imagePath_), "folder") || strings.Contains(strings.ToLower(imagePath_), "cover") {
+
+							imagePath = imagePath_
+							if strings.HasSuffix(strings.ToLower(imagePath_), "front.jpg") || strings.HasSuffix(strings.ToLower(imagePath_), "cover.jpg") {
+								break foundImageLoop
+							}
+						}
+					}
+				} else {
+					images := GetFilePathsByExtension(imagePath[0:strings.LastIndex(imagePath, "/")], ".jpg")
+					if len(images) > 0 {
+						imagePath = images[0]
+						for i := 0; i < len(images); i++ {
+							imagePath_ := images[i]
+							if strings.Contains(strings.ToLower(imagePath_), "front") || strings.Contains(strings.ToLower(imagePath_), "folder") || strings.Contains(strings.ToLower(imagePath_), "cover") {
+								imagePath = imagePath_
+								if strings.HasSuffix(strings.ToLower(imagePath_), "front.jpg") || strings.HasSuffix(strings.ToLower(imagePath_), "cover.jpg") {
+									break
+								}
+							}
+						}
+					}
+
+				}
+			}
+
+			if Exists(imagePath) {
+				metadata["ImageUrl"], _ = CreateThumbnail(imagePath, 300, 300)
+			}
+		}
+	} else {
+		return nil, err
+	}
+	return metadata, nil
+}
+
+// ExtractTextFromJpeg extracts text from a JPEG image at the given path
+func ExtractTextFromJpeg(path string) (string, error) {
+	// Check if the input file exists
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return "", fmt.Errorf("input file does not exist: %s", path)
+	}
+
+	// Generate the output file path by replacing the extension with .txt
+	outputPath := strings.TrimSuffix(path, filepath.Ext(path)) + ".txt"
+
+	// Run the Tesseract command-line tool
+	cmd := exec.Command("tesseract", path, strings.TrimSuffix(outputPath, ".txt"))
+	cmd.Stderr = os.Stderr // Redirect errors to standard error
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("failed to run tesseract: %w", err)
+	}
+
+	// Read the output file
+	outputData, err := os.ReadFile(outputPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read output file: %w", err)
+	}
+
+	// Clean up the output file after reading
+	defer os.Remove(outputPath)
+
+	// Return the extracted text as a string
+	return string(outputData), nil
 }
